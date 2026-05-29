@@ -318,20 +318,20 @@ pub fn _require_not_frozen(env: &Env) {
 /// Store the expiry timestamp for the safety-checks bypass.
 pub fn _set_bypass_safety_checks(env: &Env, expiry: u64) {
     env.storage()
-        .instance()
+        .temporary()
         .set(&DataKey::BypassSafetyChecks, &expiry);
 }
 
 /// Remove the safety-checks bypass (disables it immediately).
 pub fn _remove_bypass_safety_checks(env: &Env) {
     env.storage()
-        .instance()
+        .temporary()
         .remove(&DataKey::BypassSafetyChecks);
 }
 
 /// Return the expiry timestamp of the safety-checks bypass, or None if not set.
 pub fn _get_bypass_expiry(env: &Env) -> Option<u64> {
-    env.storage().instance().get(&DataKey::BypassSafetyChecks)
+    env.storage().temporary().get(&DataKey::BypassSafetyChecks)
 }
 
 /// Return true if a bypass is set and has not yet expired.

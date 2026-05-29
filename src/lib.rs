@@ -203,7 +203,7 @@ impl TimeLockedUpgradeContract {
     pub fn is_data_fresh(env: Env, asset: Symbol) -> bool {
         let timestamps: Map<Symbol, u64> = env
             .storage()
-            .instance()
+            .temporary()
             .get(&HEARTBEAT_KEY)
             .unwrap_or_else(|| Map::new(&env));
 
@@ -224,7 +224,7 @@ impl TimeLockedUpgradeContract {
     pub fn get_last_update_timestamp(env: Env, asset: Symbol) -> Option<u64> {
         let timestamps: Map<Symbol, u64> = env
             .storage()
-            .instance()
+            .temporary()
             .get(&HEARTBEAT_KEY)
             .unwrap_or_else(|| Map::new(&env));
 
@@ -265,12 +265,12 @@ impl TimeLockedUpgradeContract {
     fn _record_heartbeat(env: &Env, asset: Symbol) {
         let mut timestamps: Map<Symbol, u64> = env
             .storage()
-            .instance()
+            .temporary()
             .get(&HEARTBEAT_KEY)
             .unwrap_or_else(|| Map::new(env));
 
         timestamps.set(asset, env.ledger().timestamp());
-        env.storage().instance().set(&HEARTBEAT_KEY, &timestamps);
+        env.storage().temporary().set(&HEARTBEAT_KEY, &timestamps);
     }
 
     /// Internal: read the heartbeat interval from storage or return default.

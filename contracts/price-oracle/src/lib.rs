@@ -472,7 +472,7 @@ pub fn is_stale(current_time: u64, stored_timestamp: u64, ttl: u64) -> bool {
 fn acquire_lock(env: &Env) -> Result<(), Error> {
     let is_locked: bool = env
         .storage()
-        .instance()
+        .temporary()
         .get(&DataKey::IsLocked)
         .unwrap_or(false);
 
@@ -480,13 +480,13 @@ fn acquire_lock(env: &Env) -> Result<(), Error> {
         return Err(Error::ReentrancyDetected);
     }
 
-    env.storage().instance().set(&DataKey::IsLocked, &true);
+    env.storage().temporary().set(&DataKey::IsLocked, &true);
     Ok(())
 }
 
 /// Release the reentrancy lock for set_price.
 fn release_lock(env: &Env) {
-    env.storage().instance().set(&DataKey::IsLocked, &false);
+    env.storage().temporary().set(&DataKey::IsLocked, &false);
 }
 
 /// Contract version - must match Cargo.toml version
@@ -507,16 +507,16 @@ fn _set_tracked_assets(env: &Env, assets: &soroban_sdk::Vec<Symbol>) {
 
 /// Get the price buffer for a specific asset using a composite (Symbol, u64) key.
 ///
-/// Each asset's buffer is stored under `DataKey::PriceBufferByAsset(asset, ledger_sequence)`
-/// so a single-asset read never loads any other asset's buffer, eliminating the
-/// gas cost of deserialising the old `Map<Symbol, PriceBuffer>` on every call.
+/// Each asset's buffer is stored temporarily under
+/// `DataKey::PriceBufferByAsset(asset, ledger_sequence)` so a single-asset read
+/// never loads any other asset's buffer and old buffers can expire naturally.
 ///
 /// If no buffer exists for the current ledger sequence a fresh empty one is returned.
 fn get_price_buffer(env: &Env, asset: Symbol) -> PriceBuffer {
     let current_seq = env.ledger().sequence() as u64;
     let key = DataKey::PriceBufferByAsset(asset, current_seq);
     env.storage()
-        .persistent()
+        .temporary()
         .get(&key)
         .unwrap_or_else(|| PriceBuffer {
             entries: soroban_sdk::Vec::new(env),
@@ -528,19 +528,19 @@ fn get_price_buffer(env: &Env, asset: Symbol) -> PriceBuffer {
 
 /// Save the price buffer for a specific asset using a composite (Symbol, u64) key.
 ///
-/// Writes only the single slot for `(asset, ledger_sequence)` — no other asset's
-/// buffer is touched or loaded.
+/// Writes only the temporary slot for `(asset, ledger_sequence)` — no other
+/// asset's buffer is touched or loaded.
 fn set_price_buffer(env: &Env, asset: Symbol, buffer: &PriceBuffer) {
     let seq = buffer.ledger_sequence as u64;
     let key = DataKey::PriceBufferByAsset(asset, seq);
-    env.storage().persistent().set(&key, buffer);
+    env.storage().temporary().set(&key, buffer);
 }
 
 /// Clear the price buffer if it's from a previous ledger.
 ///
 /// With composite keys the buffer is already scoped to a specific ledger
 /// sequence, so staleness is implicit — a buffer from a prior ledger simply
-/// lives under a different key and is never returned by `get_price_buffer`.
+/// lives under a different temporary key until the network prunes it.
 /// This function resets the in-memory buffer when the caller holds a buffer
 /// whose `ledger_sequence` no longer matches the current ledger.
 fn clear_stale_buffer(env: &Env, _asset: Symbol, buffer: &mut PriceBuffer) {
@@ -592,7 +592,7 @@ fn _track_asset(env: &Env, asset: Symbol) {
 fn log_event(env: &Env, event_type: Symbol, asset: Symbol, price: i128) {
     let mut events: soroban_sdk::Vec<RecentEvent> = env
         .storage()
-        .instance()
+        .temporary()
         .get(&DataKey::RecentEvents)
         .unwrap_or_else(|| soroban_sdk::Vec::new(env));
 
@@ -610,7 +610,7 @@ fn log_event(env: &Env, event_type: Symbol, asset: Symbol, price: i128) {
     }
 
     env.storage()
-        .instance()
+        .temporary()
         .set(&DataKey::RecentEvents, &events);
 }
 
@@ -624,7 +624,7 @@ fn _log_admin_action(env: &Env, admin: &Address, action: AdminAction, details: O
     // Store the admin log entry - using a simple key for now
     // In production, you might want to store multiple entries in a vector
     env.storage()
-        .instance()
+        .temporary()
         .set(&DataKey::AdminUpdateTimestamp, &entry.timestamp);
 }
 
@@ -649,7 +649,7 @@ fn update_twap(env: &Env, asset: Symbol, price: i128, timestamp: u64) {
     let key = DataKey::Twap(asset);
     let mut twap_buffer: soroban_sdk::Vec<(u64, i128)> = env
         .storage()
-        .persistent()
+        .temporary()
         .get(&key)
         .unwrap_or_else(|| soroban_sdk::Vec::new(env));
 
@@ -659,7 +659,7 @@ fn update_twap(env: &Env, asset: Symbol, price: i128, timestamp: u64) {
         twap_buffer.pop_front();
     }
 
-    env.storage().persistent().set(&key, &twap_buffer);
+    env.storage().temporary().set(&key, &twap_buffer);
 }
 
 #[contractimpl]
@@ -927,7 +927,7 @@ impl PriceOracle {
         crate::auth::_set_admin(&env, &admins);
 
         env.storage()
-            .instance()
+            .temporary()
             .set(&DataKey::AdminUpdateTimestamp, &now);
 
         env.storage().instance().remove(&DataKey::PendingAdmin);
@@ -1683,7 +1683,7 @@ impl PriceOracle {
     pub fn get_last_n_events(env: Env, n: u32) -> soroban_sdk::Vec<RecentEvent> {
         let events: soroban_sdk::Vec<RecentEvent> = env
             .storage()
-            .instance()
+            .temporary()
             .get(&DataKey::RecentEvents)
             .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
 
@@ -1899,9 +1899,9 @@ impl PriceOracle {
             .instance()
             .remove(&DataKey::PendingAdminTimestamp);
         env.storage()
-            .instance()
+            .temporary()
             .remove(&DataKey::AdminUpdateTimestamp);
-        env.storage().instance().remove(&DataKey::RecentEvents);
+        env.storage().temporary().remove(&DataKey::RecentEvents);
         env.storage().instance().remove(&DataKey::Initialized);
         crate::auth::_remove_paused(&env);
 
@@ -2211,9 +2211,9 @@ impl PriceOracle {
                     .instance()
                     .remove(&DataKey::PendingAdminTimestamp);
                 env.storage()
-                    .instance()
+                    .temporary()
                     .remove(&DataKey::AdminUpdateTimestamp);
-                env.storage().instance().remove(&DataKey::RecentEvents);
+                env.storage().temporary().remove(&DataKey::RecentEvents);
                 env.storage().instance().remove(&DataKey::Initialized);
                 crate::auth::_remove_paused(&env);
 
@@ -2432,7 +2432,7 @@ impl PriceOracle {
     /// Get the Time-Weighted Average Price (TWAP) for a specific asset.
     pub fn get_twap(env: Env, asset: Symbol) -> Option<i128> {
         let key = DataKey::Twap(asset);
-        let twap_buffer: soroban_sdk::Vec<(u64, i128)> = env.storage().persistent().get(&key)?;
+        let twap_buffer: soroban_sdk::Vec<(u64, i128)> = env.storage().temporary().get(&key)?;
 
         let len = twap_buffer.len();
         if len == 0 {
