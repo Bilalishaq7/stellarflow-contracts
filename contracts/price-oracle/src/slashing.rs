@@ -379,4 +379,48 @@ mod slashing_tests {
         set_stake(&env, &relayer, 1_000_000);
         assert_eq!(get_stake(&env, &relayer), 1_000_000);
     }
+
+    #[test]
+    fn test_report_missed_blocks_updates_count_and_multiplier() {
+        let env = Env::default();
+        let relayer = Address::generate(&env);
+
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 0);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 1);
+
+        let multiplier = report_missed_blocks(&env, &relayer, 1).unwrap();
+        assert_eq!(multiplier, 1);
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 1);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 1);
+
+        let multiplier = report_missed_blocks(&env, &relayer, 1).unwrap();
+        assert_eq!(multiplier, 2);
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_report_successful_uptime_resets_after_48_hours() {
+        let env = Env::default();
+        let relayer = Address::generate(&env);
+
+        report_missed_blocks(&env, &relayer, 2).unwrap();
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 2);
+
+        env.ledger().set_timestamp(1_000);
+        assert_eq!(report_successful_uptime(&env, &relayer).unwrap(), false);
+        assert_eq!(get_uptime_streak_start(&env, &relayer), Some(1_000));
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
+
+        env.ledger().set_timestamp(1_000 + UPTIME_RESET_SECONDS - 1);
+        assert_eq!(report_successful_uptime(&env, &relayer).unwrap(), false);
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 2);
+
+        env.ledger().set_timestamp(1_000 + UPTIME_RESET_SECONDS);
+        assert_eq!(report_successful_uptime(&env, &relayer).unwrap(), true);
+        assert_eq!(get_consecutive_missed_blocks(&env, &relayer), 0);
+        assert_eq!(get_uptime_streak_start(&env, &relayer), None);
+        assert_eq!(get_slash_multiplier(&env, &relayer).unwrap(), 1);
+    }
 }
