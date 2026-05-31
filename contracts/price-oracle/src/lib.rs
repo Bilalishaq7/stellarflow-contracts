@@ -419,6 +419,8 @@ pub enum Error {
     NotInitialized = 24,
     /// Contract is emergency halted — all rate read queries are blocked.
     EmergencyHalted = 25,
+    /// Missed-block infraction counts must be positive and in range.
+    InvalidInfractionCount = 26,
 }
 
 #[contract]
@@ -3128,6 +3130,60 @@ impl PriceOracle {
             .persistent()
             .get(&DataKey::ProviderStake(relayer))
             .unwrap_or(0)
+    }
+
+    /// Report that a relayer missed one or more consecutive blocks.
+    ///
+    /// This increments the relayer's infraction counter and scales future
+    /// slashing penalties exponentially until the relayer maintains 48 hours
+    /// of uninterrupted uptime.
+    pub fn report_missed_blocks(
+        env: Env,
+        admin: Address,
+        relayer: Address,
+        missed_blocks: u32,
+    ) -> Result<i128, Error> {
+        _require_not_destroyed(&env);
+        _require_initialized(&env);
+        crate::auth::_require_not_frozen(&env);
+        admin.require_auth();
+        crate::auth::_require_authorized(&env, &admin);
+
+        crate::slashing::report_missed_blocks(&env, &relayer, missed_blocks)
+    }
+
+    /// Report a period of uninterrupted uptime for a relayer.
+    ///
+    /// The infraction multiplier is reset only after the relayer accumulates a
+    /// full 48-hour streak of uninterrupted healthy operation.
+    pub fn report_successful_uptime(
+        env: Env,
+        admin: Address,
+        relayer: Address,
+    ) -> Result<bool, Error> {
+        _require_not_destroyed(&env);
+        _require_initialized(&env);
+        crate::auth::_require_not_frozen(&env);
+        admin.require_auth();
+        crate::auth::_require_authorized(&env, &admin);
+
+        crate::slashing::report_successful_uptime(&env, &relayer)
+    }
+
+    /// Get the relayer's current consecutive missed-block count.
+    pub fn get_provider_consecutive_missed_blocks(env: Env, relayer: Address) -> u32 {
+        crate::slashing::get_consecutive_missed_blocks(&env, &relayer)
+    }
+
+    /// Get the current multiplier that will scale future slash amounts for the
+    /// relayer's consecutive missed blocks.
+    pub fn get_slashing_multiplier(env: Env, relayer: Address) -> Result<i128, Error> {
+        crate::slashing::get_slash_multiplier(&env, &relayer)
+    }
+
+    /// Get the relayer's uptime streak start timestamp, if any.
+    pub fn get_uptime_streak_start(env: Env, relayer: Address) -> Option<u64> {
+        crate::slashing::get_uptime_streak_start(&env, &relayer)
     }
 
     /// Governance-gated direct slash entry point.
