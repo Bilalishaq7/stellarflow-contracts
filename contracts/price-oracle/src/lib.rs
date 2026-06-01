@@ -229,6 +229,20 @@ pub trait StellarFlowTrait {
     /// Cancel a proposed action.
     fn cancel_proposed_action(env: Env, canceller: Address, action_id: u64) -> Result<(), ContractError>;
 
+    /// Set the governance weight for a specific admin (issue #264).
+    ///
+    /// Weight must be in the range 1–100. Only an authorized admin may call this.
+    fn set_admin_weight(env: Env, caller: Address, target_admin: Address, weight: u32) -> Result<(), Error>;
+
+    /// Get the governance weight for a specific admin (issue #264).
+    fn get_admin_weight(env: Env, admin: Address) -> u32;
+
+    /// Set the minimum cumulative weight required for a governance proposal to execute (issue #264).
+    fn set_weight_threshold(env: Env, caller: Address, threshold: u32) -> Result<(), Error>;
+
+    /// Get the configured weight threshold, or None if not set (issue #264).
+    fn get_weight_threshold(env: Env) -> Option<u32>;
+
     /// Get the health status of the oracle for the Admin Dashboard.
     ///
     /// Returns aggregated data from multiple storage keys in a single call.
@@ -800,6 +814,15 @@ fn _track_asset(env: &Env, asset: Symbol) {
         env.storage()
             .persistent()
             .set(&DataKey::TrackedAsset(asset), &());
+
+        // Issue #263: keep the isolated HealthTotalAssets slot in sync.
+        let new_count = assets.len();
+        env.storage()
+            .persistent()
+            .set(&DataKey::HealthTotalAssets, &new_count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::HealthLastLedger, &env.ledger().sequence());
     }
 }
 
@@ -1632,6 +1655,15 @@ impl PriceOracle {
         }
         _set_tracked_assets(&env, &updated_assets);
 
+        // Issue #263: keep the isolated HealthTotalAssets slot in sync.
+        let new_count = updated_assets.len();
+        env.storage()
+            .persistent()
+            .set(&DataKey::HealthTotalAssets, &new_count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::HealthLastLedger, &env.ledger().sequence());
+
         Ok(())
     }
 
@@ -2115,6 +2147,11 @@ impl PriceOracle {
         //_log_admin_action(&env, &admin1, AdminAction::TogglePause, Some(format!("New state: {}", new_paused)));
         crate::auth::_set_paused(&env, new_paused);
 
+        // Issue #263: keep the isolated HealthPaused slot in sync.
+        env.storage()
+            .persistent()
+            .set(&DataKey::HealthPaused, &new_paused);
+
         // Emit event
         env.events().publish(
             (Symbol::new(&env, "pause_toggled"),),
@@ -2300,6 +2337,132 @@ impl PriceOracle {
             return 0;
         }
         crate::auth::_get_admin(&env).len()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #264: Multi-sig signer threshold weight verification
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Set the governance weight for a specific admin (issue #264).
+    ///
+    /// Weight must be in the range 1–100.  A weight of 0 is rejected because a
+    /// zero-weight admin could never contribute to reaching the threshold.
+    /// Only an authorized admin may call this.
+    pub fn set_admin_weight(env: Env, caller: Address, target_admin: Address, weight: u32) -> Result<(), Error> {
+        _require_not_destroyed(&env);
+        _require_initialized(&env);
+        crate::auth::_require_not_frozen(&env);
+        caller.require_auth();
+        crate::auth::_require_authorized(&env, &caller);
+
+        if weight == 0 || weight > 100 {
+            return Err(Error::InvalidWeight);
+        }
+
+        // The target must be a registered admin.
+        if !crate::auth::_is_authorized(&env, &target_admin) {
+            return Err(Error::NotAuthorized);
+        }
+
+        crate::auth::_set_admin_weight(&env, &target_admin, weight);
+
+        env.events().publish(
+            (Symbol::new(&env, "admin_weight_set"),),
+            (caller, target_admin, weight),
+        );
+
+        Ok(())
+    }
+
+    /// Get the governance weight for a specific admin (issue #264).
+    ///
+    /// Returns 1 (the default) when no weight has been explicitly assigned.
+    pub fn get_admin_weight(env: Env, admin: Address) -> u32 {
+        crate::auth::_get_admin_weight(&env, &admin)
+    }
+
+    /// Set the minimum cumulative weight required for a governance proposal to
+    /// execute (issue #264).
+    ///
+    /// `threshold` must be ≥ 1.  Only an authorized admin may call this.
+    /// Once set, `execute_proposed_action` will sum voter weights and compare
+    /// against this value instead of using the simple vote-count threshold.
+    pub fn set_weight_threshold(env: Env, caller: Address, threshold: u32) -> Result<(), Error> {
+        _require_not_destroyed(&env);
+        _require_initialized(&env);
+        crate::auth::_require_not_frozen(&env);
+        caller.require_auth();
+        crate::auth::_require_authorized(&env, &caller);
+
+        if threshold == 0 {
+            return Err(Error::MultiSigValidationFailed);
+        }
+
+        crate::auth::_set_weight_threshold(&env, threshold);
+
+        env.events().publish(
+            (Symbol::new(&env, "weight_threshold_set"),),
+            (caller, threshold),
+        );
+
+        Ok(())
+    }
+
+    /// Get the configured weight threshold (issue #264).
+    ///
+    /// Returns `None` when no threshold has been set (the contract falls back
+    /// to the vote-count threshold from `get_required_threshold`).
+    pub fn get_weight_threshold(env: Env) -> Option<u32> {
+        crate::auth::_get_weight_threshold(&env)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #263: Gas-optimized OracleHealth — isolated per-field storage slots
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get the health status of the oracle for the Admin Dashboard (issue #263).
+    ///
+    /// Each field is stored in its own isolated persistent slot so a simple
+    /// dashboard read never deserialises a large monolithic struct.  The
+    /// individual slots are kept in sync by the write paths that mutate each
+    /// field (provider add/remove, pause toggle, asset add/remove).
+    pub fn get_oracle_health(env: Env) -> crate::types::OracleHealth {
+        // ── active_relayers: read the isolated counter slot ──────────────────
+        // Falls back to counting the active-relayers Vec when the isolated slot
+        // has not been written yet (first call after deployment).
+        let active_relayers: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HealthActiveRelayers)
+            .unwrap_or_else(|| crate::auth::_get_active_relayers(&env).len());
+
+        // ── paused: read the isolated flag slot ──────────────────────────────
+        let paused: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HealthPaused)
+            .unwrap_or_else(|| crate::auth::_is_paused(&env));
+
+        // ── total_assets: read the isolated counter slot ─────────────────────
+        let total_assets: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HealthTotalAssets)
+            .unwrap_or_else(|| get_tracked_assets(&env).len());
+
+        // ── last_ledger: read the isolated sequence slot ─────────────────────
+        let last_ledger: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HealthLastLedger)
+            .unwrap_or_else(|| env.ledger().sequence());
+
+        crate::types::OracleHealth {
+            active_relayers,
+            paused,
+            total_assets,
+            last_ledger,
+        }
     }
 
     /// Propose a high-impact action that requires multi-signature approval.
@@ -2604,6 +2767,10 @@ impl PriceOracle {
                 let current_paused = crate::auth::_is_paused(&env);
                 let new_paused = !current_paused;
                 crate::auth::_set_paused(&env, new_paused);
+                // Issue #263: keep the isolated HealthPaused slot in sync.
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::HealthPaused, &new_paused);
                 proposed.executed = true;
                 _log_admin_action(
                     &env,
