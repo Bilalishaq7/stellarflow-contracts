@@ -114,6 +114,7 @@ impl TimeLockedUpgradeContract {
     }
 
     pub fn remove_signer(env: Env, signer: Address, caller: Address) -> Result<(), ContractError> {
+        Self::assert_contract_is_active(&env)?;
         let data = Self::get_data(env.clone())?;
         if data.admin != caller { return Err(ContractError::NotAdmin); }
         caller.require_auth();
