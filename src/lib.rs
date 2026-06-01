@@ -1,7 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, BytesN, Map, Symbol, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Map, Symbol, Vec};
 
-mod nonce;
+pub(crate) mod nonce;
 use crate::nonce::{consume_nonce, get_nonce};
 
 #[contracterror]
@@ -236,6 +236,8 @@ impl TimeLockedUpgradeContract {
         new_wasm_hash: BytesN<32>,
         proposer: Address,
         nonce: u64,
+        salt: Bytes,
+        salt_signature: BytesN<32>,
     ) -> Result<(), ContractError> {
         let data = Self::get_data(env.clone())?;
         
@@ -245,7 +247,7 @@ impl TimeLockedUpgradeContract {
         }
         
         proposer.require_auth();
-        consume_nonce(&env, &proposer, nonce);
+        consume_nonce(&env, &proposer, nonce, salt, salt_signature);
         let current_time = env.ledger().timestamp();
         
         let pending_upgrade = PendingUpgrade {
@@ -259,7 +261,13 @@ impl TimeLockedUpgradeContract {
     }
 
     /// Execute a pending upgrade if the timelock period has passed
-    pub fn execute_upgrade(env: Env, executor: Address, nonce: u64) -> Result<(), ContractError> {
+    pub fn execute_upgrade(
+        env: Env,
+        executor: Address,
+        nonce: u64,
+        salt: Bytes,
+        salt_signature: BytesN<32>,
+    ) -> Result<(), ContractError> {
         let data = Self::get_data(env.clone())?;
         
         // Only admin can execute upgrades
@@ -268,7 +276,7 @@ impl TimeLockedUpgradeContract {
         }
         
         executor.require_auth();
-        consume_nonce(&env, &executor, nonce);
+        consume_nonce(&env, &executor, nonce, salt, salt_signature);
         let pending_upgrade: PendingUpgrade = env
             .storage()
             .instance()
@@ -336,7 +344,14 @@ impl TimeLockedUpgradeContract {
     ///
     /// Also records a heartbeat for the implicit "VALUE" asset so that
     /// `is_data_fresh` can track when the last state mutation occurred.
-    pub fn set_value(env: Env, value: u64, setter: Address, nonce: u64) -> Result<(), ContractError> {
+    pub fn set_value(
+        env: Env,
+        value: u64,
+        setter: Address,
+        nonce: u64,
+        salt: Bytes,
+        salt_signature: BytesN<32>,
+    ) -> Result<(), ContractError> {
         let mut data = Self::get_data(env.clone())?;
         
         // Only admin can set values
@@ -345,7 +360,7 @@ impl TimeLockedUpgradeContract {
         }
         
         setter.require_auth();
-        consume_nonce(&env, &setter, nonce);
+        consume_nonce(&env, &setter, nonce, salt, salt_signature);
         data.value = value;
         env.storage().instance().set(&DATA_KEY, &data);
 
