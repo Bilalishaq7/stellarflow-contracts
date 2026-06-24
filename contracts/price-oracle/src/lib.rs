@@ -476,108 +476,18 @@ pub enum ContractError {
     Unauthorized = 2,
     /// Asset symbol is not in the approved list (NGN, KES, GHS)
     InvalidAssetSymbol = 3,
-    /// Price must be greater than zero.
-    InvalidPrice = 4,
-    /// Price change exceeds maximum allowed threshold (flash crash protection).
-    FlashCrashDetected = 5,
-    /// Caller is not authorized to perform this action.
-    NotAuthorized = 6,
-    /// Contract or admin has already been initialized.
-    AlreadyInitialized = 7,
-    /// Price change exceeds the allowed delta limit in a single update.
-    PriceDeltaExceeded = 8,
-    /// Price is outside the configured min/max bounds for the asset.
-    PriceOutOfBounds = 9,
-    /// Provider weight must be between 0 and 100.
-    InvalidWeight = 10,
-    /// Multi-signature validation failed - insufficient or invalid admin signatures.
-    MultiSigValidationFailed = 11,
-    /// Cannot add more admins - maximum of 3 admins allowed.
-    MaxAdminsReached = 12,
-    /// Cannot remove admin - would leave contract without any admins.
-    CannotRemoveLastAdmin = 13,
-    /// Reentrancy detected - function is already executing.
-    ReentrancyDetected = 14,
-    /// Action not found or already executed/cancelled.
-    ActionNotFound = 15,
-    /// Vote threshold not reached - insufficient approvals.
-    ThresholdNotReached = 16,
-    /// Invalid action type for execution.
-    InvalidActionType = 17,
-    /// Action has already been executed.
-    ActionAlreadyExecuted = 18,
-    /// Action has been cancelled.
-    ActionCancelled = 19,
-    /// Contract has been permanently destroyed.
-    ContractDestroyed = 20,
-    /// Delegate assignment is invalid.
-    InvalidDelegate = 21,
-    /// Governance action cannot execute: total votes cast are below the minimum quorum.
-    QuorumNotReached = 22,
-    /// Config rollback failed: no previous value has been backed up for this parameter.
-    NoPreviousConfig = 23,
-    /// Contract has not been initialized yet.
-    NotInitialized = 24,
-    /// Contract is emergency halted — all rate read queries are blocked.
-    EmergencyHalted = 25,
-    /// Rate data is stale or expired.
-    StaleRateData = 26,
-    /// Slash amount string is missing, malformed, or is not a positive integer.
-    InvalidSlashAmount = 27,
-    /// No SEP-41 token has been configured for slashing operations.
-    SlashTokenNotSet = 28,
-    /// No insurance reserve address has been configured.
-    InsuranceReserveNotSet = 29,
-    /// No query fee token has been configured for usage fee collection.
-    FeeTokenNotSet = 48,
-    /// No pending rewards are available for the caller to claim.
-    NoRewards = 49,
-    /// Query fee amount must be zero or positive.
-    InvalidQueryFee = 50,
-    /// The fee vault does not contain enough tokens to satisfy a claim.
-    InsufficientVaultBalance = 51,
-    /// Consensus price is zero; deviation cannot be calculated (divide-by-zero guard).
-    DeviationConsensusZero = 52,
-    /// A slash amount exceeded the relayer's available stake.
-    InsufficientStake = 30,
-    /// Missed-block infraction counts must be positive and in range.
-    InvalidInfractionCount = 31,
-    /// A new price write is not allowed until the ledger advances past the previous write.
-    DuplicatePriceWriteInSameLedger = 32,
-    /// Admin has not been set on the contract.
-    AdminNotSet = 33,
-    /// The pending admin action could not be found.
-    PendingAdminNotFound = 34,
-    /// The specified address is not the pending admin.
-    NotPendingAdmin = 35,
-    /// The pending admin transfer timestamp was not found.
-    PendingAdminTimestampMissing = 36,
-    /// The admin timelock has not yet expired.
-    AdminTimelockNotExpired = 37,
-    /// A provider is not authorized to submit prices.
-    ProviderNotAuthorized = 38,
-    /// Current action requires the council address.
-    CouncilRequired = 39,
-    /// Contract is frozen and cannot execute state changes.
-    ContractFrozen = 40,
-    /// Too many assets were supplied in a batch operation.
-    TooManyAssets = 41,
-    /// A configured absolute price floor is invalid.
-    InvalidPriceFloor = 42,
-    /// A normalized price failed validation.
-    InvalidNormalizedPrice = 43,
-    /// Asset configuration provided to atomic registration is invalid.
-    InvalidAssetConfig = 44,
-    /// Maximum deviation percentage failed validation.
-    InvalidMaxDeviation = 45,
-    /// Asset price bounds failed validation.
-    InvalidPriceBounds = 46,
-    /// Arithmetic operation overflow detected.
-    PriceMathOverflow = 47,
-    /// Ledger gap too small - node must wait at least 3 blocks between submissions.
-    LedgerGapTooSmall = 53,
-    /// Denominator is zero; division by zero prevented.
-    InvalidDenominator = 54,
+    /// Stake withdrawal amount must be greater than zero.
+    InvalidStakeAmount = 4,
+    /// Validator already has a pending unbonding request.
+    UnbondingAlreadyQueued = 5,
+    /// Validator does not have an unbonding request.
+    UnbondingRequestNotFound = 6,
+    /// The minimum unbonding delay has not elapsed yet.
+    UnbondingDelayActive = 7,
+    /// The queued unbonding request was already released.
+    UnbondingAlreadyReleased = 8,
+    /// The current ledger plus the unbonding delay overflowed.
+    LedgerSequenceOverflow = 9,
 }
 
 pub type Error = ContractError;
@@ -756,9 +666,18 @@ fn acquire_lock(env: &Env) -> Result<(), ContractError> {
         return Err(ContractError::ReentrancyDetected);
     }
 
-    env.storage().temporary().set(&DataKey::IsLocked, &true);
-    Ok(())
-}
+    /// Return true when a price timestamp is older than 24 hours.
+    pub fn is_timestamp_stale(env: Env, timestamp: u64) -> bool {
+        let current_timestamp = env.ledger().timestamp();
+        current_timestamp > timestamp && current_timestamp - timestamp > 86_400
+    }
+
+    /// Set the price data for a specific asset.
+    pub fn set_price(env: Env, asset: Symbol, val: i128) -> Result<(), Error> {
+        let storage = env.storage().persistent();
+        let mut prices: soroban_sdk::Map<Symbol, PriceData> = storage
+            .get(&PRICE_DATA_KEY)
+            .unwrap_or_else(|| soroban_sdk::Map::new(&env));
 
 /// Release the reentrancy lock for set_price.
 fn release_lock(env: &Env) {
@@ -4206,6 +4125,33 @@ impl PriceOracle {
         let current_ledger = env.ledger().sequence();
         current_ledger <= last_seen.saturating_add(window)
     }
+
+    /// Queue a validator stake withdrawal behind the slashing delay.
+    pub fn request_stake_unbonding(
+        env: Env,
+        validator: Address,
+        amount: i128,
+    ) -> Result<slashing::UnbondingRequest, Error> {
+        slashing::request_unbonding(&env, &validator, amount)
+    }
+
+    /// Release a queued validator stake withdrawal after the delay expires.
+    pub fn release_unbonded_stake(env: Env, validator: Address) -> Result<i128, Error> {
+        slashing::release_unbonded_stake(&env, &validator)
+    }
+
+    /// Inspect a validator's queued unbonding request.
+    pub fn get_unbonding_request(
+        env: Env,
+        validator: Address,
+    ) -> Option<slashing::UnbondingRequest> {
+        slashing::get_unbonding_request(&env, &validator)
+    }
+
+    /// Return the enforced unbonding delay in ledgers.
+    pub fn min_unbonding_delay_ledgers() -> u32 {
+        slashing::MIN_UNBONDING_DELAY_LEDGERS
+    }
 }
 
 mod asset_symbol;
@@ -4215,8 +4161,7 @@ mod callbacks;
 mod delegate_tests;
 pub mod math;
 mod median;
-mod role_registry;
-mod slashing;
+pub mod slashing;
 mod test;
 mod types;
 mod validation;
