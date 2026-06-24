@@ -576,17 +576,10 @@ pub enum ContractError {
     PriceMathOverflow = 47,
     /// Ledger gap too small - node must wait at least 3 blocks between submissions.
     LedgerGapTooSmall = 53,
-    /// Liquidity volume is below the configured security threshold for this asset.
-    /// Price submissions from thin markets are rejected to prevent flash loan manipulation.
-    LiquidityBelowThreshold = 54,
-    /// Invalid liquidity value - must be positive and non-zero.
-    InvalidLiquidity = 55,
-    /// Liquidity threshold configuration is invalid (out of acceptable range).
-    InvalidLiquidityThreshold = 56,
+    /// Denominator is zero; division by zero prevented.
+    InvalidDenominator = 54,
 }
 
-/// Type alias for backward compatibility with internal modules.
-/// The slashing and math modules use `Error` instead of `ContractError`.
 pub type Error = ContractError;
 
 #[contract]
