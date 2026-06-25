@@ -39,3 +39,6 @@ debug-assertions = false
 panic = "abort"
 codegen-units = 1
 lto = true
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", priority = 0 }

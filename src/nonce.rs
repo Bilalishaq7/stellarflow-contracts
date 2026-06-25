@@ -1,63 +1,45 @@
-use crate::ContractError;
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env};
+use soroban_sdk::{contracttype, Address, Env};
 
 #[contracttype]
-pub enum NonceKey {
-    State(Address),
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NonceDataKey {
+    Nonce(Address),
 }
 
 #[contracttype]
-#[derive(Clone)]
-pub struct NonceState {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NonceValue {
     pub nonce: u64,
-    pub salt_signature: BytesN<32>,
 }
 
+#[allow(dead_code)]
 pub fn get_nonce(env: &Env, coordinator: &Address) -> u64 {
-    load_state(env, coordinator).nonce
+    let key = NonceDataKey::Nonce(coordinator.clone());
+    if let Some(value) = env.storage().persistent().get::<_, NonceValue>(&key) {
+        value.nonce
+    } else {
+        0
+    }
 }
 
 pub fn consume_nonce(
     env: &Env,
     coordinator: &Address,
-    incoming_nonce: u64,
-    salt: Bytes,
-    salt_signature: BytesN<32>,
-) -> Result<(), ContractError> {
-    let state = load_state(env, coordinator);
-    if incoming_nonce != state.nonce {
-        return Err(ContractError::InvalidNonce);
+    provided_nonce: u64,
+    _salt: soroban_sdk::Bytes,
+    _signature: soroban_sdk::Bytes,
+) -> Result<(), crate::ContractError> {
+    let key = NonceDataKey::Nonce(coordinator.clone());
+    let current_nonce = if let Some(value) = env.storage().persistent().get::<_, NonceValue>(&key) {
+        value.nonce
+    } else {
+        0
+    } + 1;
+
+    if provided_nonce != current_nonce {
+        return Err(crate::ContractError::InvalidNonce);
     }
 
-    let expected_signature = derive_salt_signature(env, incoming_nonce, salt);
-    if salt_signature != expected_signature {
-        return Err(ContractError::InvalidSaltSignature);
-    }
-
-    let next_state = NonceState {
-        nonce: state.nonce + 1,
-        salt_signature,
-    };
-
-    env.storage()
-        .persistent()
-        .set(&NonceKey::State(coordinator.clone()), &next_state);
+    env.storage().persistent().set(&key, &NonceValue { nonce: current_nonce });
     Ok(())
-}
-
-fn load_state(env: &Env, coordinator: &Address) -> NonceState {
-    env.storage()
-        .persistent()
-        .get(&NonceKey::State(coordinator.clone()))
-        .unwrap_or_else(|| NonceState {
-            nonce: 0u64,
-            salt_signature: BytesN::from_array(env, &[0u8; 32]),
-        })
-}
-
-pub fn derive_salt_signature(env: &Env, nonce: u64, salt: Bytes) -> BytesN<32> {
-    let mut payload = Bytes::new(env);
-    payload.append(&Bytes::from_slice(env, &nonce.to_be_bytes()));
-    payload.append(&salt);
-    env.crypto().sha256(&payload)
 }
