@@ -49,6 +49,7 @@ pub(crate) mod nonce;
 use crate::nonce::{consume_nonce, get_nonce};
 
 pub mod consensus;
+pub mod math;
 pub mod staking_tiers;
 pub mod governance;
 use crate::governance::{verify_staged_delay, StagedUpgrade};
